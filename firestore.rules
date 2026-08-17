@@ -1,0 +1,92 @@
+rules_version = '2';
+
+// Deploy these rules in the Firebase console (Firestore Database -> Rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwnerEmail() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'oomg20330@gmail.com';
+    }
+
+    function isAdmin() {
+      return isOwnerEmail()
+        || (isSignedIn()
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    }
+
+    // Public website content: anyone may read, only admins may write.
+    match /services/{doc}          { allow read: if true; allow write: if isAdmin(); }
+    match /pricing_packages/{doc}  { allow read: if true; allow write: if isAdmin(); }
+    match /portfolio_projects/{doc}{ allow read: if true; allow write: if isAdmin(); }
+    match /portfolio_media/{doc}   { allow read: if true; allow write: if isAdmin(); }
+    match /faqs/{doc}              { allow read: if true; allow write: if isAdmin(); }
+    match /site_settings/{doc}     { allow read: if true; allow write: if isAdmin(); }
+
+    // Contact requests: anyone may submit, only admins may read or delete.
+    match /contact_requests/{doc} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // User documents: a user may read/write only their own, and may never
+    // grant themselves a role (only admins can set the role field).
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if isAdmin()
+        || (isSignedIn() && request.auth.uid == uid
+            && (!request.resource.data.keys().hasAny(['role'])
+                || request.resource.data.role == resource.data.role));
+      allow delete: if isAdmin();
+    }
+
+    match /activity_logs/{doc} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Team members: public read (the app hides unpublished profiles client-side —
+    // a member only shows on /team once it has a name + a social handle). Admins
+    // manage everything; a signed-in staff member may update their own doc (matched
+    // by uid, or by email the first time they sign in and self-link).
+    match /team_members/{doc} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && (resource.data.uid == request.auth.uid
+                || (resource.data.uid == null
+                    && resource.data.email != null
+                    && request.auth.token.email != null
+                    && resource.data.email.lower() == request.auth.token.email.lower())));
+    }
+
+    // Project assignments: only admins and the assigned staff member (matched by
+    // uid or email) may read/update; only admins may create/delete.
+    match /project_assignments/{doc} {
+      allow read: if isAdmin()
+        || (isSignedIn()
+            && (resource.data.member_uid == request.auth.uid
+                || (resource.data.member_email != null
+                    && request.auth.token.email != null
+                    && resource.data.member_email.lower() == request.auth.token.email.lower())));
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && (resource.data.member_uid == request.auth.uid
+                || (resource.data.member_email != null
+                    && request.auth.token.email != null
+                    && resource.data.member_email.lower() == request.auth.token.email.lower()))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'responded_at']));
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}
